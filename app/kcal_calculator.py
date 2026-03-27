@@ -1,10 +1,9 @@
 import spacy
-import re
 from rapidfuzz import process
 from pymongo import MongoClient
 
-# NLP
-nlp = spacy.load("en_core_web_sm")
+# NLP (lepiej użyj PL!)
+nlp = spacy.load("pl_core_news_sm")
 
 # Mongo
 client = MongoClient("mongodb://localhost:27017/")
@@ -13,22 +12,36 @@ products_col = db["products"]
 
 
 # -------------------------
-# 1. Extract food + grams
+# 1. Extract food + grams (spaCy 🔥)
 # -------------------------
 def extract_items(text: str):
     doc = nlp(text.lower())
 
     items = []
 
-    # prosty pattern: "kurczak 200g"
-    pattern = r"(\w+)\s*(\d+)\s*g"
-    matches = re.findall(pattern, text.lower())
+    for token in doc:
+        # szukamy rzeczowników (produkty)
+        if token.pos_ in ["NOUN", "PROPN"]:
+            grams = None
 
-    for name, grams in matches:
-        items.append({
-            "name": name,
-            "grams": int(grams)
-        })
+            # 1. sprawdź dzieci (najlepsze dopasowanie)
+            for child in token.children:
+                if child.like_num:
+                    grams = int(child.text)
+
+            # 2. fallback — sprawdź sąsiednie tokeny
+            if not grams:
+                for neighbor in doc[max(0, token.i-2): token.i+3]:
+                    if neighbor.like_num:
+                        grams = int(neighbor.text)
+
+            # jeśli znaleziono ilość → dodaj
+            if grams:
+                items.append({
+                    "name": token.text,
+                    "grams": grams
+                })
+
 
     return items
 
@@ -39,7 +52,7 @@ def extract_items(text: str):
 def resolve_product(word: str, product_names: list):
     match = process.extractOne(word, product_names)
 
-    if match and match[1] > 80:
+    if match and match[1] > 75:  # lekko obniżone dla PL fleksji
         return match[0]
 
     return None
@@ -51,7 +64,6 @@ def resolve_product(word: str, product_names: list):
 def calculate(text: str):
     items = extract_items(text)
 
-    # pobierz produkty z Mongo
     products = list(products_col.find())
     product_names = [p["name"] for p in products]
 
@@ -80,7 +92,15 @@ def calculate(text: str):
             "kcal": kcal
         })
 
-    return {
+    result = [
+         item for item in result
+         if item.get("kcal") and item.get("grams") and item.get("resolved")
+    ]
+
+    response = {
         "items": result,
-        "total_kcal": total
+        "totalKcal": total
     }
+
+    print(response)
+    return response
